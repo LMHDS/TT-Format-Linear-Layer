@@ -1,0 +1,347 @@
+您提供的 TTProcessingElement 实现代码中确实没有显式地调用 MatrixMultiplicationKernel（MMK）。这是因为在 Tensor Train (TT) 分解的计算过程中，内核并没有直接调用通用的 GEMM 内核，而是通过手动展开的计算循环实现了矩阵乘法的计算。
+代码结构分析
+
+在 TTProcessingElement 中，主要有两个计算部分：
+
+    TT_Core1：计算第一个 TT 核心。
+    TT_Remaining_Cores：计算剩余的 TT 核心。
+
+1. TT_Core1 的计算逻辑
+
+Core1_Compute:
+for (unsigned j = 0; j < kTTOutputShapes[0]; j++) {
+    #pragma HLS UNROLL
+    sum += tt_cores.GetCore(0, 0, i, j, r1) * input[j];
+}
+
+这里，tt_cores.GetCore(0, 0, i, j, r1) 是获取第一个核心的权重矩阵元素，并与 input[j] 相乘，结果累积到 sum 中。这实际上就是矩阵乘法的计算，只是没有通过调用标准的 MatrixMultiplicationKernel，而是手动编写了乘加操作的循环。
+2. TT_Remaining_Cores 的计算逻辑
+
+for (unsigned r2 = 0; r2 < kTTRanks[core + 1]; r2++) {
+    #pragma HLS UNROLL
+    temp[j] += intermediate_results[r1][i] * 
+               tt_cores.GetCore(core, r1, i, j, r2);
+}
+
+在这里，intermediate_results[r1][i] 和 tt_cores.GetCore(core, r1, i, j, r2) 的乘积被累加到 temp[j] 中，这同样是矩阵乘法的核心计算逻辑。
+为什么没有显式调用 MatrixMultiplicationKernel
+
+    内核专用化：
+        在 TTProcessingElement 中，矩阵乘法的维度是固定的（取决于 TT 核心的大小和分解结构），所以您手动编写了乘加计算循环，而不是调用通用的 GEMM 内核。这种做法可以更好地利用 HLS 优化，例如 #pragma HLS UNROLL 和 #pragma HLS PIPELINE，从而提高并行度和性能。
+
+    避免通用 GEMM 内核的开销：
+        MatrixMultiplicationKernel 是一个通用的 GEMM 实现，适用于大规模矩阵乘法。但在 TT 分解中，通常涉及较小的核心矩阵乘法。调用通用的 GEMM 内核可能会引入不必要的循环和数据访问开销，而手动实现则可以精简计算流程。
+
+    HLS 优化与数据布局：
+        手动展开的循环可以更好地与 HLS 的 #pragma HLS UNROLL 和 #pragma HLS PIPELINE 配合，从而实现更深的流水线和更高效的数据布局优化，减少片上存储和带宽占用。
+
+可能的替代方案
+
+如果您希望在 TTProcessingElement 中显式调用 MatrixMultiplicationKernel，可以在以下情况下考虑：
+
+    TT 核心较大：当 TT 核心矩阵较大时，调用标准的 GEMM 内核可能会更加高效，因为 GEMM 内核通常包含更复杂的优化。
+    复用已有 GEMM 内核：如果项目中已经有高度优化的 GEMM 内核，并且复用成本较低，可以考虑调用 MatrixMultiplicationKernel 进行计算。
+
+替代实现示例
+
+如果需要替换为调用 MatrixMultiplicationKernel，可以参考以下示例：
+
+MatrixMultiplicationKernel(
+    intermediate_results,          // 输入矩阵
+    tt_cores.GetCore(core),        // 当前 TT 核心的权重矩阵
+    temp,                          // 输出矩阵
+    kTTShapes[core],               // 输入维度
+    kTTOutputShapes[core],         // 输出维度
+    kTTRanks[core]                 // 核心秩（rank）
+);
+
+结论
+
+    TTProcessingElement 中没有调用 MatrixMultiplicationKernel，是因为手动实现的循环结构已经完成了矩阵乘法计算，且这种实现方式更适合小规模的 TT 核心矩阵乘法。
+    手动展开的循环可以更好地利用 HLS 中的 UNROLL 和 PIPELINE 指令，提供更高的性能。
+    如果 TT 核心矩阵较大，且有高度优化的 GEMM 内核，您可以考虑调用 MatrixMultiplicationKernel，但需要权衡通用性与专用化实现之间的性能差异。
+
+如果您有进一步的优化需求或者具体的性能问题，欢迎继续讨论！
+You said:
+对于原来的库他实现gemm MMK的优势是什么，是软件上还是硬件综合上，我们在这个基础上利用他的乘法作TT, 能利用到他的算法上的优势，在硬件综合的时候也能直接利用他优化好的MMK的硬件电路吗，
+ChatGPT said:
+ChatGPT
+
+是的，您在现有库的基础上利用 MatrixMultiplicationKernel（MMK）来实现 Tensor Train（TT）的乘法，有可能在软件层面和硬件综合层面同时受益于其优化。在分析具体的优势时，考虑以下几个方面：
+1. 软件层面的优势：算法优化与高效实现
+优化算法
+
+    内存访问模式优化：
+        MatrixMultiplicationKernel 通常会优化内存访问模式，采用**分块（Tiling）**技术。分块技术能够减少外部 DRAM 的访问次数，增加片上缓存（BRAM/URAM）的命中率。这种优化对于矩阵乘法尤其重要，因为外部内存带宽通常是性能瓶颈。
+    数据复用（Data Reuse）：
+        GEMM 内核会利用数据复用技术，在片上缓存中存储部分矩阵块，避免重复从外部内存加载相同的数据。这在 TT 分解中同样适用，因为每个 TT 核心在多次迭代中会重复使用相同的权重矩阵块。
+    高效循环展开与矢量化：
+        在 GEMM 内核中，通常会利用 HLS 的 #pragma HLS UNROLL 和 SIMD（单指令多数据）技术，实现循环展开和矢量化计算。现有库会自动处理这些优化，减少编写手动优化代码的复杂性。
+    算法级别的优化：
+        一些高效的 GEMM 实现还会使用特定的矩阵乘法算法（如 Winograd 算法、Strassen 算法），这可以显著减少乘法和加法操作的次数。这些优化在硬件上同样适用，因为减少运算次数可以降低计算资源的占用。
+
+2. 硬件综合层面的优势：硬件资源优化与流水线设计
+硬件电路优化
+
+    DSP 利用率优化：
+        高效的 GEMM 内核会利用 FPGA 上的 DSP 资源进行乘法和加法操作。通过 HLS 的 #pragma HLS RESOURCE 指令，GEMM 内核可以高效地映射到 FPGA 上的 DSP 单元，减少 LUT 和 FF 的占用。
+    流水线优化（Pipeline Optimization）：
+        MatrixMultiplicationKernel 通常会使用 #pragma HLS PIPELINE 指令，使得内核在循环展开时能达到流水线的最佳启动间隔（Initiation Interval, II）。这可以显著提高吞吐量，特别是在大型矩阵乘法的情况下。
+    片上存储优化（BRAM/URAM）：
+        GEMM 内核会使用片上存储（如 BRAM、URAM）来缓存矩阵块，减少外部存储访问的延迟。现有库会根据矩阵大小自动选择片上缓存的大小和布局，从而优化硬件综合结果。
+
+资源共享与复用
+
+    资源共享：
+        在同一片 FPGA 上，如果多个计算单元共享相同的乘法和加法资源，高效的 GEMM 内核会自动处理这些共享资源，以最大化利用率。这种共享资源的机制通常在 HLS 的高层优化中会被考虑。
+    高效时钟域处理：
+        有些 GEMM 内核会考虑时钟域和时钟延迟的优化，确保时钟频率可以达到设计要求。这对于大规模矩阵乘法的综合结果非常重要。
+
+3. 在 TT 分解中利用 GEMM 优化的优势
+
+    张量收缩的计算效率：
+        在 TT 分解中，张量收缩计算的核心是多个小规模的矩阵乘法。如果直接调用优化过的 MatrixMultiplicationKernel，可以直接受益于其高效的数据复用和片上存储优化，提升收缩计算的效率。
+    统一的计算内核：
+        使用统一的 GEMM 内核作为计算核心，可以减少开发和维护的复杂性。无需为每个 TT 核心实现不同的乘法计算，而是复用同一个高效内核。
+    硬件综合优化的继承性：
+        如果 MatrixMultiplicationKernel 在库中已经被高度优化（例如，经过多次 HLS 综合调整、性能调优等），那么在您的设计中调用该内核时，可以直接继承这些优化结果，减少重新综合和调优的时间成本。
+
+4. 实际应用中的权衡与考虑
+
+虽然调用现有的 MatrixMultiplicationKernel 可以带来许多优势，但也需要注意以下几点：
+
+    适配 TT 核心的大小：
+        MatrixMultiplicationKernel 通常针对较大的矩阵设计，而 TT 分解中的矩阵乘法往往涉及较小的矩阵。如果内核不能很好地适配这些小矩阵，可能会出现资源浪费或性能下降。
+    内核调用的额外开销：
+        调用通用的 GEMM 内核可能引入额外的函数调用开销和数据搬运开销。对于非常小的矩阵乘法，手动展开循环可能会更高效。
+
+5. 混合优化策略
+
+考虑到以上权衡，建议在 TT 分解的实现中采用混合策略：
+
+    大矩阵乘法调用 GEMM 内核：对于较大的 TT 核心，直接调用 MatrixMultiplicationKernel，充分利用其高效算法和硬件优化。
+    小矩阵乘法手动实现：对于较小的 TT 核心，手动展开循环，使用 HLS 的 UNROLL 和 PIPELINE 指令，实现专用的小矩阵乘法内核。
+
+结论
+
+在现有库的基础上利用 MatrixMultiplicationKernel 作为 TT 分解中的乘法内核，能够带来算法层面的优化和硬件综合时的电路优化，从而提升性能和资源利用率。您可以直接复用库中已经调优过的内核，实现更快的硬件开发和高效的 FPGA 资源利用。
+
+如果您有具体的性能需求或者综合结果需要分析，欢迎继续提供细节，我们可以进一步优化您的设计。
+You said:
+但是在复用这个MMK的时候，需要传输不同的乘法大小和参数进去，我们该怎么调整配置
+ChatGPT said:
+ChatGPT
+
+在复用 MatrixMultiplicationKernel（MMK）时，需要处理 不同矩阵大小 和 参数配置 的问题。由于 Tensor Train（TT）分解中，矩阵乘法的大小在各个 TT 核心之间可能有所不同，您需要设计一个 可配置的调用机制 来调整传入 MMK 的参数。下面我将详细介绍如何在现有设计上灵活配置 MMK 内核。
+1. 灵活参数化的设计思路
+
+为了复用 MMK，需要让 MatrixMultiplicationKernel 支持动态传入矩阵的维度和参数，而不是在综合时固定大小。这通常包括以下几个关键参数：
+
+    输入矩阵维度 (M, N)：表示输入矩阵的行数和列数。
+    权重矩阵维度 (K, N)：表示权重矩阵的行数和列数。
+    计算并行度 (kParallelismM, kParallelismN)：表示计算时的并行度配置。
+
+可以通过 参数化接口 或 动态配置接口 实现这一点。
+2. 修改 MatrixMultiplicationKernel 的接口
+
+首先，需要修改 MatrixMultiplicationKernel 的接口，增加 M, N, K 这些参数，以支持不同大小的矩阵乘法。
+修改后的 MMK 接口
+
+extern "C" {
+void MatrixMultiplicationKernel(
+    const MemoryPackN_t input[],        // 输入矩阵
+    const MemoryPackM_t weights[],      // 权重矩阵
+    MemoryPackM_t output[],             // 输出矩阵
+    const unsigned M,                   // 输入矩阵行数
+    const unsigned N,                   // 输入矩阵列数（等于权重矩阵行数）
+    const unsigned K,                   // 权重矩阵列数
+    const unsigned kParallelismM,       // M 方向并行度
+    const unsigned kParallelismN        // N 方向并行度
+);
+}
+
+调用示例
+
+MatrixMultiplicationKernel(
+    input,               // 输入矩阵指针
+    weights,             // 权重矩阵指针
+    output,              // 输出矩阵指针
+    input_dim,           // 输入矩阵的行数 M
+    output_dim,          // 输入矩阵的列数 N
+    rank_dim,            // 权重矩阵的列数 K
+    kParallelismM,       // M 方向并行度
+    kParallelismN        // N 方向并行度
+);
+
+3. 在 TT 分解中调用 MMK 时动态配置参数
+
+在 TTProcessingElement 中，根据当前的 TT 核心动态传入矩阵大小和并行度配置。例如：
+
+TT_Core1:
+for (unsigned core_idx = 0; core_idx < num_tt_cores; core_idx++) {
+    unsigned M = kTTShapes[core_idx];          // 当前 TT 核心的输入维度
+    unsigned N = kTTOutputShapes[core_idx];    // 当前 TT 核心的输出维度
+    unsigned K = kTTRanks[core_idx];           // 当前 TT 核心的秩（Rank）
+
+    MatrixMultiplicationKernel(
+        input_in.Pop(),            // 输入矩阵
+        tt_cores.GetCore(core_idx),// 当前 TT 核心的权重矩阵
+        intermediate_results,      // 中间计算结果
+        M,                         // 行数
+        N,                         // 列数
+        K,                         // 秩
+        kParallelismM,             // 并行度配置
+        kParallelismN              // 并行度配置
+    );
+}
+
+4. 硬件综合优化：动态配置的挑战与解决方案
+挑战
+
+    动态矩阵大小：在硬件设计中，动态矩阵大小会增加资源的占用和时钟延迟，因为编译器无法在综合时确定矩阵的确切大小。
+    性能损失：动态配置会导致一些硬件优化（如循环展开、流水线优化）效果下降。
+
+解决方案
+
+    使用模板和 #pragma HLS INLINE OFF：
+        在 HLS 中使用模板（Template）和 #pragma HLS INLINE OFF 指令，确保 MMK 内核在不同大小调用时不会内联，从而创建多个独立的硬件实例，避免动态配置带来的性能损失。
+
+template<unsigned M, unsigned N, unsigned K>
+void MatrixMultiplicationKernelTemplate(
+    const MemoryPackN_t input[],
+    const MemoryPackM_t weights[],
+    MemoryPackM_t output[]) {
+    #pragma HLS INLINE OFF
+    // 核心计算逻辑
+}
+
+预综合多个实例：
+
+    如果矩阵大小的变化是有限的，可以预综合多个不同大小的 MMK 实例，在运行时选择适当的内核调用。例如：
+
+    if (M == 32 && N == 32 && K == 16) {
+        MatrixMultiplicationKernel_32x32x16(input, weights, output);
+    } else if (M == 64 && N == 64 && K == 32) {
+        MatrixMultiplicationKernel_64x64x32(input, weights, output);
+    }
+
+    利用 HLS 的 DATAFLOW 优化：
+        使用 #pragma HLS DATAFLOW 指令，使得多个矩阵乘法计算实例可以流水化执行，隐藏数据传输的延迟。
+
+5. 综合结果验证
+
+建议您在 HLS 中进行以下验证步骤：
+
+    性能测试：使用不同大小的矩阵，测试修改后的 MMK 内核性能，检查动态配置是否影响到时钟周期和资源占用。
+    资源使用分析：查看 HLS 综合报告，确认动态配置后 LUT、DSP 和 BRAM 的使用情况，确保资源不会过度增加。
+    时序分析：查看时钟周期（Latency）和启动间隔（Initiation Interval, II），确保流水线性能没有受到太大影响。
+
+结论
+
+通过调整 MatrixMultiplicationKernel 的接口，使其支持动态传入矩阵大小和配置参数，您可以在 Tensor Train 分解中灵活复用已有的 GEMM 内核，充分利用其算法和硬件优化优势。虽然动态配置会带来一些挑战，但通过模板、预综合实例和数据流优化，可以有效地减轻这些问题。
+
+如果您有进一步的性能测试数据或者遇到了具体的优化瓶颈，可以提供更多细节，我可以帮助您深入分析和调整配置。
+You said:
+所以如果需要使用他的MMK kernel，由于TT需要乘法大小的差异，必须要创建多个MMK的实例。但我很好奇，不调用它的MMK，我们自己实现的矩阵乘法不是也会有大小的差异吗，是怎么解决的呢，
+ChatGPT said:
+ChatGPT
+
+这是一个很好的问题！它涉及到在 FPGA 上实现矩阵乘法时处理不同大小矩阵的问题，无论是使用库中的 MatrixMultiplicationKernel（MMK），还是您自己实现的矩阵乘法内核。在处理不同大小的矩阵乘法时，确实会面临类似的挑战。接下来，我将详细分析为什么库中的 MMK 需要多个实例，以及在自己实现矩阵乘法时如何解决这个问题。
+1. 库中的 MatrixMultiplicationKernel 的实例化问题
+
+库中的 MMK 通常是为通用用途设计的，也就是说它的设计初衷是处理任意大小的矩阵乘法。为了实现这一点，内核需要支持动态参数传入（例如矩阵大小 M, N, K）。然而，在 HLS（高层次综合）中，这种动态大小的设计会带来以下问题：
+动态大小的挑战：
+
+    循环展开和流水线优化受限：
+        HLS 编译器在综合时会为每一个循环展开和流水线优化。若矩阵大小是动态的（运行时决定），编译器无法在综合时确定循环边界，因此无法进行**循环展开（Unroll）和流水线（Pipeline）**优化。
+    硬件资源效率低下：
+        动态矩阵大小意味着硬件资源（DSP、BRAM 等）必须设计成能适应最大可能的矩阵大小。这会导致资源浪费，因为小矩阵乘法可能用不到这些资源。
+    时钟周期和启动间隔（II）增加：
+        动态矩阵大小使得硬件电路需要更多的控制逻辑来处理矩阵的边界情况，这会增加时钟周期和启动间隔（II）。
+
+多实例化的解决方案：
+
+    为了解决上述问题，库通常会实例化多个固定大小的 MMK 内核。例如，可以为 32x32、64x64、128x128 等常见的矩阵大小实例化独立的硬件内核，这样：
+        每个实例在综合时都能进行完全展开和流水线优化。
+        综合报告中可以看到针对特定大小优化的时钟周期、启动间隔和资源使用情况。
+    在运行时，根据输入矩阵的大小选择合适的实例来调用。
+
+2. 手动实现的矩阵乘法如何处理大小差异
+
+相比之下，如果您自己实现矩阵乘法，有几种方法可以处理大小的差异：
+方法 1：模板化设计（Template-based Design）
+
+    使用 C++ 模板（Template）为不同大小的矩阵生成不同的内核实例。例如：
+
+    template<unsigned M, unsigned N, unsigned K>
+    void MatrixMultiplication(const Data_t A[M][K], const Data_t B[K][N], Data_t C[M][N]) {
+        #pragma HLS PIPELINE II=1
+        for (int i = 0; i < M; i++) {
+            for (int j = 0; j < N; j++) {
+                Data_t sum = 0;
+                for (int k = 0; k < K; k++) {
+                    #pragma HLS UNROLL
+                    sum += A[i][k] * B[k][j];
+                }
+                C[i][j] = sum;
+            }
+        }
+    }
+
+    使用模板化设计时，编译器会为每个不同的 M, N, K 组合生成独立的硬件电路，这样可以进行完全的循环展开和流水线优化。
+
+方法 2：手动展开循环（Loop Unrolling）
+
+    如果矩阵大小是已知的或者是固定范围内的值，可以使用 #pragma HLS UNROLL 指令手动展开循环：
+
+    for (int i = 0; i < max_M; i++) {
+        #pragma HLS UNROLL factor=4
+        for (int j = 0; j < max_N; j++) {
+            #pragma HLS UNROLL factor=4
+            Data_t sum = 0;
+            for (int k = 0; k < max_K; k++) {
+                #pragma HLS UNROLL
+                sum += A[i][k] * B[k][j];
+            }
+            C[i][j] = sum;
+        }
+    }
+
+    使用 UNROLL 指令时，可以为不同的矩阵大小调整展开因子，达到更好的性能。
+
+方法 3：分块（Tiling）计算
+
+    对于非常大的矩阵，可以使用分块（Tiling）技术，将大矩阵分解为多个小块，每次计算一个块：
+
+    for (int ii = 0; ii < M; ii += TILE_SIZE) {
+        for (int jj = 0; jj < N; jj += TILE_SIZE) {
+            for (int kk = 0; kk < K; kk += TILE_SIZE) {
+                // 计算子块
+                for (int i = ii; i < ii + TILE_SIZE; i++) {
+                    for (int j = jj; j < jj + TILE_SIZE; j++) {
+                        Data_t sum = 0;
+                        for (int k = kk; k < kk + TILE_SIZE; k++) {
+                            sum += A[i][k] * B[k][j];
+                        }
+                        C[i][j] += sum;
+                    }
+                }
+            }
+        }
+    }
+
+    分块技术不仅能减少片上存储的需求，还能提高数据复用率，从而提升性能。
+
+3. 综合对比
+方法	优点	缺点
+使用库中的 MMK	高效的算法优化，利用已有的电路优化	需要实例化多个大小，增加综合时间和资源占用
+自己实现 + 模板化设计	灵活性高，支持不同大小，完全展开和优化	代码复杂度高，可能增加综合时间
+自己实现 + 手动展开/分块	控制灵活，易于调优	适用于已知大小或固定范围内的矩阵乘法
+自己实现 + 动态大小支持	代码简单，支持任意大小矩阵	缺乏优化，性能和资源利用率较低
+4. 推荐方案
+
+    固定大小的 TT 核心矩阵：如果 TT 核心矩阵大小在设计时是已知的，建议使用模板化设计或实例化多个库中的 MMK。
+    变化范围较小的 TT 核心矩阵：如果矩阵大小有多个不同组合，但数量有限，可以实例化多个 MMK 内核，在运行时选择合适的实例调用。
+    完全动态大小的 TT 核心矩阵：如果矩阵大小变化范围很大且不可预测，建议自己实现带有分块和手动展开的矩阵乘法，以避免库中动态大小带来的性能问题。
+
+希望这些分析和建议能帮助您在设计中做出合适的选择。如果有具体的矩阵大小和性能需求，欢迎进一步提供信息，我可以帮助您进行更详细的优化分析。

@@ -1,0 +1,86 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#ifdef MM_HALF_PRECISION
+#include "hls_half.h"
+#endif
+#include "hlslib/xilinx/Operators.h"
+
+using uint8_t = unsigned char;
+using Data_t = ${MM_DATA_TYPE}; 
+
+constexpr int kMemoryWidthBytesN = ${MM_MEMORY_BUS_WIDTH_N};
+constexpr int kMemoryWidthBytesK = ${MM_MEMORY_BUS_WIDTH_K};
+constexpr int kMemoryWidthBytesM = ${MM_MEMORY_BUS_WIDTH_M};
+
+#ifndef MM_DYNAMIC_SIZES
+constexpr unsigned long kSizeN = ${MM_SIZE_N};
+constexpr unsigned long kSizeK = ${MM_SIZE_K};
+constexpr unsigned long kSizeM = ${MM_SIZE_M};
+#endif
+
+constexpr unsigned long kOuterTileSizeN = ${MM_MEMORY_TILE_SIZE_N};
+constexpr unsigned long kOuterTileSizeM = ${MM_MEMORY_TILE_SIZE_M};
+constexpr unsigned long kInnerTileSizeN = ${MM_PARALLELISM_N};
+constexpr int kComputeTileSizeM = ${MM_PARALLELISM_M};
+// constexpr int kComputeTileSizeN = ${MM_GRANULARITY_N}; // NYI
+constexpr int kComputeTileSizeN = 1;
+
+constexpr int kTransposeWidthBytes = ${MM_TRANSPOSE_WIDTH};
+constexpr float kFrequency = ${MM_CLOCK_INTERNAL};
+constexpr auto kGoldenDir = "${MM_GOLDEN_DIR}"; 
+
+using OperatorMap = hlslib::op::${MM_MAP_OP}<Data_t>;
+using OperatorReduce = hlslib::op::${MM_REDUCE_OP}<Data_t>;
+
+// TT扩展配置
+#ifdef BUILD_TT_LINEAR
+namespace tt {
+
+// TT基本维度配置
+constexpr unsigned kInputSize = ${TT_INPUT_SIZE};
+constexpr unsigned kOutputSize = ${TT_OUTPUT_SIZE};
+constexpr unsigned kNumCores = ${TT_NUM_CORES};
+constexpr unsigned kMaxRank = ${TT_MAX_RANK};
+
+// 使用与GEMM相同的数据类型和内存配置
+using TTDataType = Data_t;
+constexpr unsigned kMemoryAlignment = kMemoryWidthBytesM;
+constexpr unsigned kStreamDepth = 4;
+constexpr unsigned kMaxBatchSize = 32;
+
+// 自定义维度分解配置
+#ifdef TT_USE_CUSTOM_MODES
+constexpr unsigned kInputModes[] = { ${TT_INPUT_MODES} };
+constexpr unsigned kOutputModes[] = { ${TT_OUTPUT_MODES} };
+constexpr unsigned kRanks[] = { ${TT_RANKS} };
+#else
+// 默认分解（通过计算得到）
+constexpr unsigned kInputPerCore = ${TT_INPUT_SIZE} / ${TT_NUM_CORES};
+constexpr unsigned kOutputPerCore = ${TT_OUTPUT_SIZE} / ${TT_NUM_CORES};
+#endif
+
+// GEMM重用的数据包类型定义
+using ComputePackN_t = hlslib::DataPack<TTDataType, kComputeTileSizeN>;
+using ComputePackM_t = hlslib::DataPack<TTDataType, kComputeTileSizeM>;
+using MemoryPackM_t = hlslib::DataPack<TTDataType, kMemoryWidthBytesM / sizeof(TTDataType)>;
+using Stream = hlslib::Stream<TTDataType, kStreamDepth>;
+
+// 编译期检查
+static_assert(kInputSize > 0 && kOutputSize > 0, "Input/Output size must be positive");
+static_assert(kNumCores > 0, "Number of cores must be positive");
+static_assert(kMaxRank > 0, "Maximum rank must be positive");
+
+} // namespace tt
+#endif  // BUILD_TT_LINEAR
+
+// GEMM内存转换配置
+#if ${MM_MEMORY_BUS_WIDTH_M} != ${MM_KERNEL_WIDTH_M}
+  #define MM_CONVERT_B
+#endif
+
+#if (defined(MM_TRANSPOSED_A) && \
+     (${MM_DATA_WIDTH_${MM_DATA_TYPE}} != ${MM_MEMORY_BUS_WIDTH_N}))
+  #define MM_CONVERT_A
+#endif
