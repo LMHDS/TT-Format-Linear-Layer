@@ -8,6 +8,10 @@
 #include "Memory.h"
 #include <cassert>
 
+constexpr int kInnerTilesN = kOuterTileSizeN / kInnerTileSizeN;
+constexpr int kInnerTilesM = kOuterTileSizeM / kComputeTileSizeM;
+constexpr int kComputeTilesN = kInnerTileSizeN;
+
 void ProcessingElement(Stream<ComputePackN_t> &aIn,
                        Stream<ComputePackN_t> &aOut,
                        Stream<ComputePackM_t> &bIn,
@@ -20,6 +24,7 @@ void ProcessingElement(Stream<ComputePackN_t> &aIn,
   // previous outer product is being computed. This is required to achieve
   // a perfect pipeline across the K-dimension, which is necessary for
   // many processing elements (kInnerTileSizeN).
+
   ComputePackN_t aBuffer[2 * kInnerTilesN];
 
   // This is where we spend all our T^2 fast memory

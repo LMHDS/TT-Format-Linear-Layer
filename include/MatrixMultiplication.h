@@ -14,14 +14,12 @@ using hlslib::Stream;
 constexpr int kSeed = 5; // For initializing matrices for testing
 constexpr unsigned kPipeDepth = 4;
 
-// Memory bus in K-dimension
-constexpr int kMemoryWidthK = kMemoryWidthBytesK / sizeof(Data_t);
+// Memory bus in K-dimension - using global config
 static_assert(kMemoryWidthBytesK % sizeof(Data_t) == 0,
               "Memory width in K not divisable by size of data type.");
 using MemoryPackK_t = hlslib::DataPack<Data_t, kMemoryWidthK>;
 
-// Memory bus in M-dimension
-constexpr int kMemoryWidthM = kMemoryWidthBytesM / sizeof(Data_t);
+// Memory bus in M-dimension - using global config
 static_assert(kMemoryWidthBytesM % sizeof(Data_t) == 0,
               "Memory width in M not divisable by size of data type.");
 using MemoryPackM_t = hlslib::DataPack<Data_t, kMemoryWidthM>;
@@ -41,46 +39,26 @@ static_assert(kTransposeWidthBytes % kMemoryWidthBytesK == 0,
               "Transpose width must be divisable by memory port width.");
 
 using MemoryPackA_t = MemoryPackK_t;
-constexpr decltype(kMemoryWidthK) kMemoryWidthA = kMemoryWidthK;
+constexpr auto kMemoryWidthA = kMemoryWidthK;
 
 #else // MM_TRANSPOSED_A
 
-// Memory bus in N-dimension (for transposed A)
-constexpr int kMemoryWidthN = kMemoryWidthBytesN / sizeof(Data_t);
+// Memory bus in N-dimension (for transposed A) - using global config
 static_assert(kMemoryWidthBytesN % sizeof(Data_t) == 0,
               "Memory width in N not divisable by size of data type.");
 using MemoryPackN_t = hlslib::DataPack<Data_t, kMemoryWidthN>;
 using MemoryPackA_t = MemoryPackN_t;
-constexpr decltype(kMemoryWidthN) kMemoryWidthA = kMemoryWidthN;
-
-constexpr unsigned long kOuterTileSizeNMemory = kOuterTileSizeN / kMemoryWidthN;
-static_assert(
-    kOuterTileSizeN % kMemoryWidthN == 0,
-    "Outer memory tile size in N must be divisable by memory port width.");
-
-inline unsigned SizeNMemory(unsigned n) {
-  #pragma HLS INLINE
-  return n / kMemoryWidthN;
-}
+constexpr auto kMemoryWidthA = kMemoryWidthN;
 
 #endif // MM_TRANSPOSED_A
 
+constexpr unsigned long kOuterTileSizeNMemory = kOuterTileSizeN / kMemoryWidthN;
+static_assert(kOuterTileSizeN % kMemoryWidthN == 0,
+              "Outer memory tile size in N must be divisable by memory port width.");
+
 constexpr unsigned long kOuterTileSizeMMemory = kOuterTileSizeM / kMemoryWidthM;
-static_assert(
-    kOuterTileSizeM % kMemoryWidthM == 0,
-    "Outer memory tile size in M must be divisable by memory port width.");
-
-constexpr unsigned long kInnerTilesN = kOuterTileSizeN / kInnerTileSizeN;
-static_assert(kOuterTileSizeN % kInnerTileSizeN == 0,
-              "Outer tile size must be divisable by the inner tile size.");
-
-constexpr unsigned long kInnerTilesM = kOuterTileSizeM / kComputeTileSizeM;
-static_assert(kOuterTileSizeM % kComputeTileSizeM == 0,
-              "Outer tile size must be divisable by compute tile size in M.");
-
-constexpr unsigned long kComputeTilesN = kInnerTileSizeN / kComputeTileSizeN;
-static_assert(kInnerTileSizeN % kComputeTileSizeN == 0,
-              "Inner tile size must be divisable by compute tile size.");
+static_assert(kOuterTileSizeM % kMemoryWidthM == 0,
+              "Outer memory tile size in M must be divisable by memory port width.");
 
 #ifndef MM_DYNAMIC_SIZES
 

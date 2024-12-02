@@ -3,6 +3,8 @@
 #include "Memory.h"
 #include "hlslib/xilinx/Simulation.h"
 
+constexpr int kComputeTilesN = kInnerTileSizeN;
+
 #ifdef MM_TRANSPOSED_A
 void MatrixMultiplicationKernel(MemoryPackN_t const a[],
                                 MemoryPackM_t const b[], MemoryPackM_t c[]

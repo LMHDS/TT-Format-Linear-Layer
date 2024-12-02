@@ -6,6 +6,10 @@
 
 using hlslib::Stream;
 
+constexpr int kInnerTilesN = kOuterTileSizeN / kInnerTileSizeN;
+constexpr int kInnerTilesM = kOuterTileSizeM / kComputeTileSizeM;
+constexpr int kComputeTilesN = kInnerTileSizeN;
+
 #ifndef MM_TRANSPOSED_A
 
 unsigned IndexA(const unsigned n0, const unsigned n1, const unsigned n2,
@@ -320,43 +324,53 @@ ConvertWidthB_Outer:
   }
 }
 
+
 void ConvertWidthC(Stream<ComputePackM_t> &narrow, Stream<MemoryPackM_t> &wide,
                    const unsigned size_n, const unsigned size_k,
                    const unsigned size_m) {
   assert(kMemoryWidthM % ComputePackM_t::kWidth == 0);
 
-  // assert((((size_n * size_m) / MemoryPackM_t::kWidth) *
-  //         (kMemoryWidthM / ComputePackM_t::kWidth) * ComputePackM_t::kWidth) ==
-  //        size_n * size_m);
-
 ConvertWidthC_N:
   for (unsigned i = 0; i < OuterTilesN(size_n) * kOuterTileSizeN; ++i) {
   ConvertWidthC_M:
     for (unsigned j = 0; j < OuterTilesM(size_m) * kOuterTileSizeMMemory; ++j) {
-#ifdef MM_CONVERT_B
-    ConvertWidthB_Memory:
-      MemoryPackM_t memoryPack;
-      for (unsigned j = 0; j < kMemoryWidthM / ComputePackM_t::kWidth; ++j) {
-        #pragma HLS PIPELINE II=1
-        #pragma HLS LOOP_FLATTEN
-        const auto computePack = narrow.Pop();
-      ConvertWidthB_Compute:
-        for (unsigned w = 0; w < ComputePackM_t::kWidth; ++w) {
-          #pragma HLS UNROLL
-          memoryPack[j * ComputePackM_t::kWidth + w] = computePack[w];
-        }
-        if (j == kMemoryWidthM / ComputePackM_t::kWidth - 1) {
-          wide.Push(memoryPack);
-        }
-      }
-#else
       #pragma HLS PIPELINE II=1
       #pragma HLS LOOP_FLATTEN
-      wide.Push(narrow.Pop());
-#endif
+      
+      #ifdef MM_CONVERT_WIDTH
+        MemoryPackM_t memoryPack;
+        for (unsigned k = 0; k < kMemoryWidthM / ComputePackM_t::kWidth; ++k) {
+          const auto computePack = narrow.Pop();
+          for (unsigned w = 0; w < ComputePackM_t::kWidth; ++w) {
+            #pragma HLS UNROLL
+            memoryPack[k * ComputePackM_t::kWidth + w] = computePack[w];
+          }
+          if (k == kMemoryWidthM / ComputePackM_t::kWidth - 1) {
+            wide.Push(memoryPack);
+          }
+        }
+      #else
+        // When widths don't match, need explicit conversion
+        MemoryPackM_t memoryPack;
+        const auto computePack = narrow.Pop();
+        
+        // Initialize all elements to 0
+        for (unsigned w = 0; w < kMemoryWidthM; ++w) {
+          #pragma HLS UNROLL
+          memoryPack[w] = 0;
+        }
+        
+        // Copy available elements
+        for (unsigned w = 0; w < ComputePackM_t::kWidth; ++w) {
+          #pragma HLS UNROLL
+          memoryPack[w] = computePack[w];
+        }
+        wide.Push(memoryPack);
+      #endif
     }
   }
 }
+
 
 void WriteC(Stream<MemoryPackM_t> &pipe, MemoryPackM_t memory[],
             const unsigned size_n, const unsigned size_k,

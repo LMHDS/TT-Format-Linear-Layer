@@ -3,12 +3,13 @@ project(sdaccel_mm)
 
 include(${CMAKE_SOURCE_DIR}/config.cmake)
 
-# 设置Vitis HLS路径
+# Vitis HLS Configuration
 set(VITIS_HLS_ROOT $ENV{XILINX_HLS})
 if(NOT VITIS_HLS_ROOT)
     message(FATAL_ERROR "XILINX_HLS environment variable not set")
 endif()
 
+# HLS libraries
 set(VITIS_HLS_LIBS
     ${VITIS_HLS_ROOT}/lib/lnx64.o/libhlsmath.so
     ${VITIS_HLS_ROOT}/lnx64/tools/fpo_v7_1/libIp_floating_point_v7_1_bitacc_cmodel.so
@@ -20,181 +21,39 @@ set(VITIS_HLS_LIBS
     pthread
 )
 
-# 设置模块路径
+# Set module path
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake
     ${CMAKE_MODULE_PATH} ${CMAKE_SOURCE_DIR}/hlslib/cmake)
 
-# Target options 
+# Platform and Target Options
 set(MM_PLATFORM "xilinx_u250_gen3x16_xdma_4_1_202210_1" CACHE STRING "Platform string for Vitis.")
-set(MM_TARGET_CLOCK "" CACHE STRING "Target clock for kernel (uses default is left empty).")
+set(MM_CLOCK_INTERNAL "300" CACHE INTERNAL "")
 set(MM_ENABLE_PROFILING OFF CACHE BOOL "Collect profiling information.")
 set(MM_ENABLE_DEBUGGING OFF CACHE BOOL "Inject debugging cores to design.")
 set(MM_VITIS_FLAGS "" CACHE STRING "Extra flags for Vitis.")
-set(MM_POWER_METER OFF CACHE BOOL "Enable Corsair power meter for measuring power consumption with Corsair RMi power supplies.")
+set(MM_POWER_METER OFF CACHE BOOL "Enable Corsair power meter.")
 set(MM_ENABLE_BLAS ON CACHE BOOL "Use BLAS library for validation if available.")
 
-# Domain options
-set(MM_DATA_TYPE "float" CACHE STRING "Matrix data type.")
-set(MM_MEMORY_BUS_WIDTH_N 64 CACHE STRING "Width of memory bus in bytes in N.")
-set(MM_MEMORY_BUS_WIDTH_K 64 CACHE STRING "Width of memory bus in bytes in K.")
-set(MM_MEMORY_BUS_WIDTH_M 64 CACHE STRING "Width of memory bus in bytes in M.")
-set(MM_DYNAMIC_SIZES ON CACHE BOOL "Use dynamic matrix dimension sizes.")
-set(MM_SIZE_N 512 CACHE STRING "Size of matrix dimension.")
-set(MM_SIZE_K 512 CACHE STRING "Size of matrix dimension.")
-set(MM_SIZE_M 512 CACHE STRING "Size of matrix dimension.")
-set(MM_MEMORY_TILE_SIZE_N 256 CACHE STRING "Tile size of outer memory tile in N.")
-set(MM_MEMORY_TILE_SIZE_M 256 CACHE STRING "Tile size of outer memory tile in M.")
-set(MM_PARALLELISM_N 32 CACHE STRING "Number of parallel compute in N.")
-set(MM_PARALLELISM_M 8 CACHE STRING "Number of parallel compute in M.")
-# set(MM_GRANULARITY_N 1 CACHE STRING "Granularity of processing elements in N.")
-set(MM_TRANSPOSED_A OFF CACHE BOOL "Assume the input matrix A is transposed.")
-set(MM_TRANSPOSE_WIDTH 64 CACHE STRING "Burst width when transposing reads from A.")
-set(MM_TWO_DIMMS OFF CACHE BOOL "Use two DDR DIMMs instead of one")
-set(MM_MAP_OP "Multiply" CACHE STRING "Map operation to perform between A and B matrices.")
-set(MM_REDUCE_OP "Add" CACHE STRING "Reduction operation to write back to C.")
-set(MM_ADD_RESOURCE OFF CACHE STRING "")
-set(MM_MULT_RESOURCE OFF CACHE STRING "")  
+# Data type configuration
+set(MM_DATA_TYPE "float" CACHE STRING "Matrix data type (float/half).")
+option(USE_HALF_PRECISION "Use half precision floating point" OFF)
 
-# Internal
-set(MM_KERNEL_NAME MatrixMultiplicationKernel)
-include(CheckTypeSize)
-check_type_size(${MM_DATA_TYPE} MM_DATA_WIDTH_${MM_DATA_TYPE})
-if(NOT MM_DATA_WIDTH_${MM_DATA_TYPE}) # Non-primitive data type
-  if(MM_DATA_TYPE STREQUAL "half")
-    set(MM_DATA_WIDTH_${MM_DATA_TYPE} 2)
-  elseif(MM_DATA_TYPE STREQUAL "uint8_t")
-    set(MM_DATA_WIDTH_${MM_DATA_TYPE} 1)
-  else()
-    message(FATAL_ERROR "Could not get size of data type ${MM_DATA_TYPE}.") 
-  endif()
-endif()
-math(EXPR MM_KERNEL_WIDTH_N "${MM_DATA_WIDTH_${MM_DATA_TYPE}} * ${MM_PARALLELISM_N}")
-math(EXPR MM_KERNEL_WIDTH_M "${MM_DATA_WIDTH_${MM_DATA_TYPE}} * ${MM_PARALLELISM_M}")
-
-link_directories(
-    ${VITIS_HLS_ROOT}/lib/lnx64.o
-    ${VITIS_HLS_ROOT}/lnx64/tools/fpo_v7_1
-)
-
-# Validation checks
-math(EXPR MM_INNER_TILES "(${MM_MEMORY_TILE_SIZE_N} / ${MM_PARALLELISM_N}) * (${MM_MEMORY_TILE_SIZE_M} / ${MM_PARALLELISM_M})")
-if(NOT MM_TRANSPOSED_A AND MM_MEMORY_TILE_SIZE_N GREATER MM_INNER_TILES)
-  message(WARNING "In-memory transposition for A cannot keep up with the instantiated number of compute units. The number of inner tiles (currently ${MM_INNER_TILES}) must be greater than or equal to the outer tile size in N (currently ${MM_MEMORY_TILE_SIZE_N}).")
+if(USE_HALF_PRECISION)
+    set(MM_DATA_TYPE "half")
+    add_definitions(-DMM_HALF_PRECISION)
 endif()
 
-math(EXPR MM_MEMORY_WIDTH_M "${MM_MEMORY_BUS_WIDTH_M} / ${MM_DATA_WIDTH_${MM_DATA_TYPE}}")
-math(EXPR MM_REM "${MM_MEMORY_WIDTH_M} % ${MM_PARALLELISM_M}")
-if(MM_REM GREATER 0)
-  message(FATAL_ERROR "Bus width in M (${MM_MEMORY_WIDTH_M}) must be a multiple of the parallelism in M (${MM_PARALLELISM_M}).")
-endif()
-math(EXPR MM_REM "${MM_MEMORY_TILE_SIZE_M} % ${MM_MEMORY_WIDTH_M}")
-if(MM_REM GREATER 0)
-  message(FATAL_ERROR "Outer memory tile size must be divisible by element width of memory bus.")
+# TT-Linear Configuration Options
+set(TT_NUM_CORES 4 CACHE STRING "Number of TT cores")
+if(TT_NUM_CORES LESS 1)
+    message(FATAL_ERROR "TT_NUM_CORES must be at least 1")
 endif()
 
-set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake
-    ${CMAKE_MODULE_PATH} ${CMAKE_SOURCE_DIR}/hlslib/cmake)
-
-find_package(Vitis REQUIRED)
-find_package(Threads REQUIRED)
-
-# Check if BLAS is available
-if(MM_ENABLE_BLAS)
-  find_package(BLAS)
-  if(BLAS_FOUND)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DMM_HAS_BLAS")
-  else()
-    set(BLAS_LIBRARIES)
-  endif()
-else()
-  set(BLAS_LIBRARIES)
-endif()
-
-# Include power meter
-if(MM_POWER_METER)
-  add_subdirectory(powermeter)
-  include_directories(SYSTEM powermeter/include powermeter/OpenCorsairLink/include ${LIBUSB_INCLUDE_DIR})
-  add_definitions("-DMM_POWER_METER")
-endif()
-
-include_directories(include ${CMAKE_BINARY_DIR} SYSTEM hlslib/include ${Vitis_INCLUDE_DIRS})
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
-
-if(MM_DYNAMIC_SIZES)
-  add_definitions("-DMM_DYNAMIC_SIZES")
-  set(MM_SYNTHESIS_FLAGS "${MM_SYNTHESIS_FLAGS} -DMM_DYNAMIC_SIZES")
-endif()
-if(MM_TRANSPOSED_A)
-  add_definitions("-DMM_TRANSPOSED_A")
-  set(MM_SYNTHESIS_FLAGS "${MM_SYNTHESIS_FLAGS} -DMM_TRANSPOSED_A")
-endif()
-add_definitions("-DHLSLIB_STREAM_TIMEOUT=16")
-if(((${Vitis_MAJOR_VERSION} LESS 2018) AND (${Vitis_MINOR_VERSION} LESS 3)) OR ${Vitis_MAJOR_VERSION} LESS 2017)
-  add_definitions(-DHLSLIB_LEGACY_SDX=1)
-else()
-  add_definitions(-DHLSLIB_LEGACY_SDX=0)
-endif()
-if(MM_DATA_TYPE STREQUAL "half")
-  add_definitions("-DMM_HALF_PRECISION")
-endif()
-
-# Query default clock of platform
-if(NOT "${MM_TARGET_CLOCK}")
-  if(NOT "${MM_PLATFORM_INTERNAL}" STREQUAL "${MM_PLATFORM}")
-    message(STATUS "Querying default clock for ${MM_PLATFORM}.")
-    execute_process(COMMAND ${Vitis_PLATFORMINFO} --platform ${MM_PLATFORM} -jhardwarePlatform.systemClocks
-                    OUTPUT_VARIABLE SYSTEM_CLOCKS
-                    RESULT_VARIABLE RET)
-    if(RET EQUAL 0)
-      string(FIND "${SYSTEM_CLOCKS}" "\"default\": \"true\"" LOC)
-      string(SUBSTRING "${SYSTEM_CLOCKS}" ${LOC} -1 SYSTEM_CLOCKS)
-      string(REGEX MATCH "\"frequency\": \"[0-9\\.]+\"" SYSTEM_CLOCKS "${SYSTEM_CLOCKS}")
-      string(REGEX REPLACE "\"frequency\": \"([0-9\\.]+)\"" "\\1" CLOCK "${SYSTEM_CLOCKS}")
-      set(MM_CLOCK_INTERNAL "${CLOCK}" CACHE INTERNAL "")
-      set(MM_PLATFORM_INTERNAL "${MM_PLATFORM}" CACHE INTERNAL "")
-    else()
-      message(WARNING "Failed to query default frequency for platform ${MM_PLATFORM}. Assuming 300 MHz.")
-      set(MM_CLOCK_INTERNAL "300" CACHE INTERNAL "")
-    endif()
-  endif()
-endif()
-
-# 配置HLS头文件
-configure_file(include/Config.h.in Config.h)
-
-# GEMM核心库
-set(MM_KERNEL_SRC
-    ${CMAKE_SOURCE_DIR}/kernel/Compute.cpp
-    ${CMAKE_SOURCE_DIR}/kernel/Memory.cpp
-    ${CMAKE_SOURCE_DIR}/kernel/Top.cpp)
-add_library(mmkernel ${MM_KERNEL_SRC})
-target_link_libraries(mmkernel 
-    PRIVATE ${CMAKE_THREAD_LIBS_INIT}
-)
-
-# [添加Half精度支持]
-if(MM_DATA_TYPE STREQUAL "half")
-    add_definitions("-DMM_HALF_PRECISION")
-    target_link_libraries(mmkernel 
-        PRIVATE 
-        ${VITIS_HLS_LIBS}
-    )
-endif()
-
-# 设置mmkernel的运行时链接路径
-set_target_properties(mmkernel PROPERTIES
-    INSTALL_RPATH "${VITIS_HLS_ROOT}/lib/lnx64.o;${VITIS_HLS_ROOT}/lnx64/tools/fpo_v7_1"
-    BUILD_WITH_INSTALL_RPATH TRUE
-    LINK_FLAGS "-Wl,--no-as-needed"
-)
-
-# [新增] TT-Linear配置选项
 set(TT_INPUT_SIZE 256 CACHE STRING "TT input dimension size")
 set(TT_OUTPUT_SIZE 256 CACHE STRING "TT output dimension size")
-set(TT_NUM_CORES 4 CACHE STRING "Number of TT cores")
 set(TT_MAX_RANK 64 CACHE STRING "Maximum TT rank")
 
-# [新增] TT维度分解配置
+# TT Dimension Decomposition Configuration
 option(TT_USE_CUSTOM_MODES "Use custom mode decomposition" OFF)
 if(TT_USE_CUSTOM_MODES)
     set(TT_INPUT_MODES "4,4,4,4" CACHE STRING "Custom input modes (comma-separated)")
@@ -202,7 +61,236 @@ if(TT_USE_CUSTOM_MODES)
     set(TT_RANKS "1,64,64,64,1" CACHE STRING "Custom TT ranks (comma-separated)")
 endif()
 
-# [新增] TT-Linear库
+
+# Memory Configuration
+set(MM_MEMORY_BUS_WIDTH_N 64 CACHE STRING "Width of memory bus in bytes in N.")
+set(MM_MEMORY_BUS_WIDTH_K 64 CACHE STRING "Width of memory bus in bytes in K.")
+set(MM_MEMORY_BUS_WIDTH_M 64 CACHE STRING "Width of memory bus in bytes in M.")
+set(MM_DYNAMIC_SIZES ON CACHE BOOL "Use dynamic matrix dimension sizes.")
+set(MM_MEMORY_TILE_SIZE_N 256 CACHE STRING "Tile size of outer memory tile in N.")
+set(MM_MEMORY_TILE_SIZE_M 256 CACHE STRING "Tile size of outer memory tile in M.")
+set(MM_PARALLELISM_N 32 CACHE STRING "Number of parallel compute in N.")
+set(MM_PARALLELISM_M 8 CACHE STRING "Number of parallel compute in M.")
+set(MM_TRANSPOSED_A OFF CACHE BOOL "Assume the input matrix A is transposed.")
+set(MM_TRANSPOSE_WIDTH 64 CACHE STRING "Burst width when transposing reads from A.")
+set(MM_TWO_DIMMS OFF CACHE BOOL "Use two DDR DIMMs instead of one")
+set(MM_MAP_OP "Multiply" CACHE STRING "Map operation between A and B matrices.")
+set(MM_REDUCE_OP "Add" CACHE STRING "Reduction operation to write back to C.")
+set(MM_ADD_RESOURCE OFF CACHE STRING "")
+set(MM_MULT_RESOURCE OFF CACHE STRING "")
+
+# Function to validate TT modes
+function(validate_tt_modes TOTAL_SIZE MODES VALID)
+    string(REPLACE "," ";" MODE_LIST "${MODES}")
+    set(product 1)
+    foreach(mode IN LISTS MODE_LIST)
+        math(EXPR product "${product} * ${mode}")
+    endforeach()
+    if(product EQUAL TOTAL_SIZE)
+        set(${VALID} TRUE PARENT_SCOPE)
+    else()
+        set(${VALID} FALSE PARENT_SCOPE)
+        message(STATUS "Dimension verification failed: product=${product}, expected=${TOTAL_SIZE}")
+    endif()
+endfunction()
+
+# Function to generate TT core configurations
+function(generate_tt_core_configs)
+    if(TT_USE_CUSTOM_MODES)
+        string(REPLACE "," ";" INPUT_MODES_LIST "${TT_INPUT_MODES}")
+        string(REPLACE "," ";" OUTPUT_MODES_LIST "${TT_OUTPUT_MODES}")
+        string(REPLACE "," ";" TT_RANKS_LIST "${TT_RANKS}")
+    else()
+        set(INPUT_MODES_LIST "8;8;8;2")
+        set(OUTPUT_MODES_LIST "8;8;4;2")
+        set(TT_RANKS_LIST "1;64;64;64;1")
+    endif()
+
+    # 设置TTCore维度
+    list(GET INPUT_MODES_LIST 0 TT_INPUT_MODE_0)
+    list(GET INPUT_MODES_LIST 1 TT_INPUT_MODE_1)
+    list(GET INPUT_MODES_LIST 2 TT_INPUT_MODE_2)
+    list(GET INPUT_MODES_LIST 3 TT_INPUT_MODE_3)
+    
+    list(GET OUTPUT_MODES_LIST 0 TT_OUTPUT_MODE_0)
+    list(GET OUTPUT_MODES_LIST 1 TT_OUTPUT_MODE_1)
+    list(GET OUTPUT_MODES_LIST 2 TT_OUTPUT_MODE_2)
+    list(GET OUTPUT_MODES_LIST 3 TT_OUTPUT_MODE_3)
+    
+    list(GET TT_RANKS_LIST 0 TT_RANK_0)
+    list(GET TT_RANKS_LIST 1 TT_RANK_1)
+    list(GET TT_RANKS_LIST 2 TT_RANK_2)
+    list(GET TT_RANKS_LIST 3 TT_RANK_3)
+    list(GET TT_RANKS_LIST 4 TT_RANK_4)
+
+    # 计算GEMM维度
+    # First GEMM: [I2*I3*I4, I1] × [I1, r1*O1]
+    math(EXPR TT_GEMM_N0 "${TT_INPUT_MODE_1} * ${TT_INPUT_MODE_2} * ${TT_INPUT_MODE_3}")
+    set(TT_GEMM_K0 ${TT_INPUT_MODE_0})
+    math(EXPR TT_GEMM_M0 "${TT_RANK_1} * ${TT_OUTPUT_MODE_0}")
+
+    # Second GEMM: [O1*I3*I4, r1*I2] × [r1*I2, r2*O2]
+    math(EXPR TT_GEMM_N1 "${TT_OUTPUT_MODE_0} * ${TT_INPUT_MODE_2} * ${TT_INPUT_MODE_3}")
+    math(EXPR TT_GEMM_K1 "${TT_RANK_1} * ${TT_INPUT_MODE_1}")
+    math(EXPR TT_GEMM_M1 "${TT_RANK_2} * ${TT_OUTPUT_MODE_1}")
+
+    # Third GEMM: [O1*O2*I4, r2*I3] × [r2*I3, r3*O3]
+    math(EXPR TT_GEMM_N2 "${TT_OUTPUT_MODE_0} * ${TT_OUTPUT_MODE_1} * ${TT_INPUT_MODE_3}")
+    math(EXPR TT_GEMM_K2 "${TT_RANK_2} * ${TT_INPUT_MODE_2}")
+    math(EXPR TT_GEMM_M2 "${TT_RANK_3} * ${TT_OUTPUT_MODE_2}")
+
+    # Fourth GEMM: [O1*O2*O3, r3*I4] × [r3*I4, O4]
+    math(EXPR TT_GEMM_N3 "${TT_OUTPUT_MODE_0} * ${TT_OUTPUT_MODE_1} * ${TT_OUTPUT_MODE_2}")
+    math(EXPR TT_GEMM_K3 "${TT_RANK_3} * ${TT_INPUT_MODE_3}")
+    math(EXPR TT_GEMM_M3 "${TT_RANK_4} * ${TT_OUTPUT_MODE_3}")
+
+    # 设置TTCore维度变量到父作用域
+    set(TT_INPUT_MODE_0 ${TT_INPUT_MODE_0} PARENT_SCOPE)
+    set(TT_INPUT_MODE_1 ${TT_INPUT_MODE_1} PARENT_SCOPE)
+    set(TT_INPUT_MODE_2 ${TT_INPUT_MODE_2} PARENT_SCOPE)
+    set(TT_INPUT_MODE_3 ${TT_INPUT_MODE_3} PARENT_SCOPE)
+
+    set(TT_OUTPUT_MODE_0 ${TT_OUTPUT_MODE_0} PARENT_SCOPE)
+    set(TT_OUTPUT_MODE_1 ${TT_OUTPUT_MODE_1} PARENT_SCOPE)
+    set(TT_OUTPUT_MODE_2 ${TT_OUTPUT_MODE_2} PARENT_SCOPE)
+    set(TT_OUTPUT_MODE_3 ${TT_OUTPUT_MODE_3} PARENT_SCOPE)
+
+    set(TT_RANK_0 ${TT_RANK_0} PARENT_SCOPE)
+    set(TT_RANK_1 ${TT_RANK_1} PARENT_SCOPE)
+    set(TT_RANK_2 ${TT_RANK_2} PARENT_SCOPE)
+    set(TT_RANK_3 ${TT_RANK_3} PARENT_SCOPE)
+    set(TT_RANK_4 ${TT_RANK_4} PARENT_SCOPE)
+
+    # 设置GEMM维度变量到父作用域
+    set(TT_GEMM_N0 ${TT_GEMM_N0} PARENT_SCOPE)
+    set(TT_GEMM_K0 ${TT_GEMM_K0} PARENT_SCOPE)
+    set(TT_GEMM_M0 ${TT_GEMM_M0} PARENT_SCOPE)
+
+    set(TT_GEMM_N1 ${TT_GEMM_N1} PARENT_SCOPE)
+    set(TT_GEMM_K1 ${TT_GEMM_K1} PARENT_SCOPE)
+    set(TT_GEMM_M1 ${TT_GEMM_M1} PARENT_SCOPE)
+
+    set(TT_GEMM_N2 ${TT_GEMM_N2} PARENT_SCOPE)
+    set(TT_GEMM_K2 ${TT_GEMM_K2} PARENT_SCOPE)
+    set(TT_GEMM_M2 ${TT_GEMM_M2} PARENT_SCOPE)
+
+    set(TT_GEMM_N3 ${TT_GEMM_N3} PARENT_SCOPE)
+    set(TT_GEMM_K3 ${TT_GEMM_K3} PARENT_SCOPE)
+    set(TT_GEMM_M3 ${TT_GEMM_M3} PARENT_SCOPE)
+
+    # 添加维度验证
+    math(EXPR total_input "${TT_INPUT_MODE_0} * ${TT_INPUT_MODE_1} * ${TT_INPUT_MODE_2} * ${TT_INPUT_MODE_3}")
+    math(EXPR total_output "${TT_OUTPUT_MODE_0} * ${TT_OUTPUT_MODE_1} * ${TT_OUTPUT_MODE_2} * ${TT_OUTPUT_MODE_3}")
+    
+    if(NOT ${total_input} EQUAL ${TT_INPUT_SIZE})
+        message(FATAL_ERROR "Input modes product (${total_input}) does not match input size (${TT_INPUT_SIZE})")
+    endif()
+    
+    if(NOT ${total_output} EQUAL ${TT_OUTPUT_SIZE})
+        message(FATAL_ERROR "Output modes product (${total_output}) does not match output size (${TT_OUTPUT_SIZE})")
+    endif()
+
+# Generate memory width validation and conversion logic
+# TT Core Memory Configurations
+foreach(core_idx RANGE 0 3)
+    set(TT_CORE${core_idx}_MEMORY_WIDTH_N 64 CACHE STRING "Memory width N for core ${core_idx}")
+    set(TT_CORE${core_idx}_MEMORY_WIDTH_K 64 CACHE STRING "Memory width K for core ${core_idx}")
+    set(TT_CORE${core_idx}_MEMORY_WIDTH_M 64 CACHE STRING "Memory width M for core ${core_idx}")
+    
+    set(TT_CORE${core_idx}_COMPUTE_TILE_N 1 CACHE STRING "Compute tile size N for core ${core_idx}")
+    set(TT_CORE${core_idx}_COMPUTE_TILE_M 8 CACHE STRING "Compute tile size M for core ${core_idx}")
+    
+    set(TT_CORE${core_idx}_MEMORY_ALIGNMENT 4096 CACHE STRING "Memory alignment for core ${core_idx}")
+endforeach()
+
+# 验证每个核心的配置
+function(validate_core_config core_idx)
+    math(EXPR width_check_m 
+         "${TT_CORE${core_idx}_MEMORY_WIDTH_M} % ${TT_CORE${core_idx}_COMPUTE_TILE_M}")
+    if(NOT width_check_m EQUAL 0)
+        message(WARNING "Core ${core_idx}: Memory width M must be divisible by compute tile size M")
+    endif()
+    
+    math(EXPR width_check_n
+         "${TT_CORE${core_idx}_MEMORY_WIDTH_N} % ${TT_CORE${core_idx}_COMPUTE_TILE_N}")
+    if(NOT width_check_n EQUAL 0)
+        message(WARNING "Core ${core_idx}: Memory width N must be divisible by compute tile size N")
+    endif()
+endfunction()
+
+foreach(core_idx RANGE 0 3)
+    validate_core_config(${core_idx})
+endforeach()
+
+
+endfunction()
+
+# Generate TT core configurations
+generate_tt_core_configs()
+
+# Configure header files
+configure_file(include/Config.h.in ${CMAKE_BINARY_DIR}/Config.h )
+
+# Find required packages
+find_package(Vitis REQUIRED)
+find_package(Threads REQUIRED)
+
+if(MM_ENABLE_BLAS)
+    find_package(BLAS)
+    if(BLAS_FOUND)
+        add_definitions(-DMM_HAS_BLAS)
+    endif()
+endif()
+
+# Include directories
+include_directories(
+    include 
+    ${CMAKE_BINARY_DIR} 
+    SYSTEM 
+    hlslib/include 
+    ${Vitis_INCLUDE_DIRS}
+)
+
+# Compiler flags
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
+
+if(MM_DYNAMIC_SIZES)
+    add_definitions(-DMM_DYNAMIC_SIZES)
+endif()
+
+if(MM_TRANSPOSED_A)
+    add_definitions(-DMM_TRANSPOSED_A)
+endif()
+
+# GEMM Kernel Library
+set(MM_KERNEL_SRC
+    ${CMAKE_SOURCE_DIR}/kernel/Compute.cpp
+    ${CMAKE_SOURCE_DIR}/kernel/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/kernel/Top.cpp)
+
+add_library(mmkernel ${MM_KERNEL_SRC})
+
+target_link_libraries(mmkernel 
+    PRIVATE 
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+# Set runtime link path for mmkernel
+set_target_properties(mmkernel PROPERTIES
+    INSTALL_RPATH "${VITIS_HLS_ROOT}/lib/lnx64.o;${VITIS_HLS_ROOT}/lnx64/tools/fpo_v7_1"
+    BUILD_WITH_INSTALL_RPATH TRUE
+    LINK_FLAGS "-Wl,--no-as-needed"
+)
+
+# Half precision support
+if(USE_HALF_PRECISION)
+    target_link_libraries(mmkernel 
+        PRIVATE 
+        ${VITIS_HLS_LIBS}
+    )
+endif()
+
+# TT-Linear Library
 add_library(tt_linear
     src/tt_linear/tt_core.cpp
     src/tt_linear/tt_linear.cpp
@@ -213,14 +301,19 @@ target_link_libraries(tt_linear
         mmkernel
 )
 
-if(MM_DATA_TYPE STREQUAL "half")
+target_compile_definitions(tt_linear
+    PUBLIC
+    TT_NUM_CORES=${TT_NUM_CORES}
+)
+
+if(USE_HALF_PRECISION)
     target_link_libraries(tt_linear
         PRIVATE
         ${VITIS_HLS_LIBS}
     )
 endif()
 
-# [新增] TT-Linear测试程序
+# TT-Linear Test Program
 add_executable(tt_linear_test
     test/tt_linear_test.cpp
 )
@@ -230,6 +323,6 @@ target_link_libraries(tt_linear_test
         tt_linear
 )
 
-# [新增] 启用测试
+# Enable testing
 enable_testing()
 add_test(NAME tt_test COMMAND tt_linear_test)

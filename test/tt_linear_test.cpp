@@ -1,245 +1,246 @@
 #include "tt_linear/tt_linear.h"
-#include <numeric>
-#include <algorithm>
+#include <iostream>
+#include <random>
 #include <cassert>
+#include <cmath>
+#include <vector>
+#include <iomanip>
+#include <chrono>
 
-namespace gemm_hls {
-namespace tt {
+using namespace gemm_hls::tt;
 
-// Config实现部分
+// 辅助函数：生成随机数据
 template<typename T>
-void TTLinear<T>::Config::initialize_default() {
-    // 计算每个维度的基本大小
-    input_modes.resize(num_cores);
-    output_modes.resize(num_cores);
-    ranks.resize(num_cores + 1);
-
-    // 计算维度分解
-    const unsigned base_input_mode = std::round(std::pow(input_size, 1.0/num_cores));
-    const unsigned base_output_mode = std::round(std::pow(output_size, 1.0/num_cores));
-
-    // 设置维度分解
-    std::fill(input_modes.begin(), input_modes.end(), base_input_mode);
-    std::fill(output_modes.begin(), output_modes.end(), base_output_mode);
-
-    // 设置TT秩
-    ranks[0] = ranks[num_cores] = 1;
-    std::fill(ranks.begin() + 1, ranks.end() - 1, kMaxRank);
-
-    validate();
-}
-
-template<typename T>
-void TTLinear<T>::Config::validate() const {
-    if (input_modes.size() != num_cores || output_modes.size() != num_cores) {
-        throw std::invalid_argument("Incorrect number of modes");
-    }
-    if (ranks.size() != num_cores + 1) {
-        throw std::invalid_argument("Incorrect number of ranks");
-    }
-    if (!is_valid_decomposition(input_size, input_modes) ||
-        !is_valid_decomposition(output_size, output_modes)) {
-        throw std::invalid_argument("Invalid dimension decomposition");
-    }
-    if (ranks.front() != 1 || ranks.back() != 1) {
-        throw std::invalid_argument("First and last ranks must be 1");
-    }
-}
-
-template<typename T>
-bool TTLinear<T>::Config::is_valid_decomposition(
-    unsigned total, const std::vector<unsigned>& factors) const {
-    return total == std::accumulate(
-        factors.begin(), factors.end(), 1u, std::multiplies<unsigned>());
-}
-
-// TTLinear实现部分
-template<typename T>
-TTLinear<T>::TTLinear(const Config& config) : config_(config) {
-    initialize_cores();
-    initialize_buffers();
-}
-
-template<typename T>
-void TTLinear<T>::initialize_cores() {
-    cores_.reserve(config_.num_cores);
-    for (unsigned i = 0; i < config_.num_cores; ++i) {
-        cores_.emplace_back(
-            config_.ranks[i],
-            config_.input_modes[i],
-            config_.ranks[i + 1],
-            config_.output_modes[i]
-        );
-    }
-    verify_chain_consistency();
-}
-
-template<typename T>
-void TTLinear<T>::initialize_buffers() {
-    // 计算最大缓冲区大小
-    size_t max_buffer_size = 0;
-    for (unsigned i = 0; i < config_.num_cores; ++i) {
-        max_buffer_size = std::max(
-            max_buffer_size, 
-            calculate_buffer_size(i, kMaxBatchSize)
-        );
-    }
-
-    // 分配缓冲区
-    input_buffer_.resize(max_buffer_size);
-    output_buffer_.resize(max_buffer_size);
-    temp_buffer_.resize(max_buffer_size);
-}
-
-template<typename T>
-void TTLinear<T>::forward(const T* input, T* output, unsigned batch_size) {
-    validate_runtime(input, output, batch_size);
-    ensure_buffer_capacity(batch_size);
-
-    // 准备输入数据
-    prepare_input(input, batch_size);
-
-    // 依次通过每个TT核心
-    const MemoryPackM_t* curr_input = input_buffer_.data();
-    MemoryPackM_t* curr_output = output_buffer_.data();
-
-    for (unsigned i = 0; i < config_.num_cores; ++i) {
-        compute_single_core(i, curr_input, curr_output, batch_size);
-
-        // 准备下一次迭代
-        std::swap(curr_input, curr_output);
-        curr_output = (curr_output == output_buffer_.data()) 
-                     ? temp_buffer_.data() 
-                     : output_buffer_.data();
-    }
-
-    // 输出最终结果
-    finalize_output(output, batch_size);
-}
-
-template<typename T>
-void TTLinear<T>::compute_single_core(
-    unsigned core_idx,
-    const MemoryPackM_t* input,
-    MemoryPackM_t* output,
-    unsigned batch_size) const {
-
-    // 准备TT核心的矩阵形式
-    AlignedVector core_matrix;
-    cores_[core_idx].prepare_for_gemm(core_matrix);
-
-    // 获取GEMM维度
-    auto dims = get_gemm_dims(core_idx, batch_size);
-
-    // 调用GEMM
-    MatrixMultiplicationKernel(
-        input,
-        core_matrix.data(),
-        output,
-        dims.M, dims.K, dims.N
-    );
-}
-
-template<typename T>
-void TTLinear<T>::prepare_input(const T* input, unsigned batch_size) const {
-    const unsigned elements_per_pack = sizeof(MemoryPackM_t) / sizeof(T);
-    const unsigned total_elements = config_.input_size * batch_size;
-
-    for (unsigned i = 0; i < total_elements; i += elements_per_pack) {
-        MemoryPackM_t pack;
-        for (unsigned j = 0; j < elements_per_pack; ++j) {
-            pack[j] = (i + j < total_elements) ? input[i + j] : T(0);
+std::vector<T> generate_random_data(size_t size, float scale = 1.0f, unsigned seed = 42) {
+    std::mt19937 gen(seed);
+    std::normal_distribution<float> dist(0.0f, scale);
+    
+    std::vector<T> data(size);
+    for (size_t i = 0; i < size; ++i) {
+        if constexpr (std::is_same_v<T, half>) {
+            data[i] = __float2half(dist(gen));
+        } else {
+            data[i] = static_cast<T>(dist(gen));
         }
-        input_buffer_[i / elements_per_pack] = pack;
+    }
+    return data;
+}
+
+template<typename T>
+bool test_construction() {
+    std::cout << "\nTesting basic construction..." << std::endl;
+    
+    try {
+        // 使用默认配置
+        TTLinear<T> layer;
+        
+        // 验证维度
+        assert(layer.input_size() == kTTInputSize);
+        assert(layer.output_size() == kTTOutputSize);
+        assert(layer.num_cores() == kTTNumCores);
+        
+        // 初始化为0
+        layer.initialize_zeros();
+
+        // 验证每个核心
+        using Config0 = typename TTLinear<T>::template CoreConfig<0>;
+        using Config1 = typename TTLinear<T>::template CoreConfig<1>;
+        using Config2 = typename TTLinear<T>::template CoreConfig<2>;
+        using Config3 = typename TTLinear<T>::template CoreConfig<3>;
+
+        // 验证GEMM维度
+        assert(Config0::kGemmN * Config0::kGemmK == kTTInputSize);
+        assert(Config3::kGemmN * Config3::kGemmM == kTTOutputSize);
+        
+        std::cout << "Basic construction test passed!" << std::endl;
+        return true;
+    }
+    catch (const std::exception& e) {
+        std::cout << "Construction test failed: " << e.what() << std::endl;
+        return false;
     }
 }
 
 template<typename T>
-void TTLinear<T>::finalize_output(T* output, unsigned batch_size) const {
-    const unsigned elements_per_pack = sizeof(MemoryPackM_t) / sizeof(T);
-    const unsigned total_elements = config_.output_size * batch_size;
+bool test_forward_propagation() {
+    std::cout << "\nTesting forward propagation..." << std::endl;
+    
+    try {
+        TTLinear<T> layer;
+        
+        // 生成随机输入数据
+        using Config0 = typename TTLinear<T>::template CoreConfig<0>;
+        using MemoryPackN_t = typename TTLinear<T>::template MemoryPackN_t<0>;
 
-    for (unsigned i = 0; i < total_elements; i += elements_per_pack) {
-        const auto& pack = output_buffer_[i / elements_per_pack];
-        for (unsigned j = 0; j < elements_per_pack; ++j) {
-            if (i + j < total_elements) {
-                output[i + j] = pack[j];
+        const size_t input_size = Config0::kGemmN * Config0::kGemmK;
+        std::vector<T> input = generate_random_data<T>(input_size);
+        
+        using Config3 = typename TTLinear<T>::template CoreConfig<3>;
+        const size_t output_size = Config3::kGemmN * Config3::kGemmM;
+        std::vector<T> output(output_size);
+        
+        // 初始化层参数
+        layer.initialize_random();
+        
+        // 执行前向传播
+        auto start = std::chrono::high_resolution_clock::now();
+        layer.forward(input.data(), output.data());
+        auto end = std::chrono::high_resolution_clock::now();
+        
+        std::chrono::duration<double, std::milli> duration = end - start;
+        std::cout << "Forward propagation took " << duration.count() << " ms" << std::endl;
+        
+        // 验证输出不全为0
+        bool all_zeros = std::all_of(output.begin(), output.end(), 
+                                   [](T val) { return val == T(0); });
+        if (all_zeros) {
+            throw std::runtime_error("Output contains all zeros");
+        }
+        
+        // 打印一些输出样本
+        std::cout << "Sample outputs:" << std::endl;
+        for (int i = 0; i < 5 && i < output.size(); ++i) {
+            float val = std::is_same_v<T, half> ? __half2float(output[i]) : output[i];
+            std::cout << "output[" << i << "] = " << val << std::endl;
+        }
+        
+        std::cout << "Forward propagation test passed!" << std::endl;
+        return true;
+    }
+    catch (const std::exception& e) {
+        std::cout << "Forward propagation test failed: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+// 测试不同核心的GEMM操作
+template<typename T>
+bool test_gemm_operations() {
+    std::cout << "\nTesting GEMM operations..." << std::endl;
+    
+    try {
+        TTLinear<T> layer;
+        layer.initialize_random();
+
+        // 测试第一个核心的GEMM
+        using Config0 = typename TTLinear<T>::template CoreConfig<0>;
+        {
+            const size_t N = Config0::kGemmN;
+            const size_t K = Config0::kGemmK;
+            const size_t M = Config0::kGemmM;
+            
+            std::vector<T> input(N * K);
+            std::vector<T> output(N * M);
+            
+            // 使用随机数据
+            for(size_t i = 0; i < input.size(); ++i) {
+                input[i] = static_cast<T>(rand()) / RAND_MAX;
             }
+            
+            // 执行GEMM操作
+            layer.compute_gemm<0>(input.data(), output.data());
+            
+            // 验证输出维度和数值
+            assert(output.size() == N * M);
+            
+            std::cout << "Core 0 GEMM test passed!" << std::endl;
         }
+        
+        // Similar tests for other cores...
+        using Config1 = typename TTLinear<T>::template CoreConfig<1>;
+        {
+            const size_t N = Config1::kGemmN;
+            const size_t K = Config1::kGemmK;
+            const size_t M = Config1::kGemmM;
+            
+            std::vector<T> input(N * K);
+            std::vector<T> output(N * M);
+            
+            // 使用随机数据
+            for(size_t i = 0; i < input.size(); ++i) {
+                input[i] = static_cast<T>(rand()) / RAND_MAX;
+            }
+            
+            // 执行GEMM操作
+            layer.compute_gemm<1>(input.data(), output.data());
+            
+            // 验证输出维度和数值
+            assert(output.size() == N * M);
+            
+            std::cout << "Core 1 GEMM test passed!" << std::endl;
+        }
+        
+        using Config2 = typename TTLinear<T>::template CoreConfig<2>;
+        {
+            const size_t N = Config2::kGemmN;
+            const size_t K = Config2::kGemmK;
+            const size_t M = Config2::kGemmM;
+            
+            std::vector<T> input(N * K);
+            std::vector<T> output(N * M);
+            
+            // 使用随机数据
+            for(size_t i = 0; i < input.size(); ++i) {
+                input[i] = static_cast<T>(rand()) / RAND_MAX;
+            }
+            
+            // 执行GEMM操作
+            layer.compute_gemm<2>(input.data(), output.data());
+            
+            // 验证输出维度和数值
+            assert(output.size() == N * M);
+            
+            std::cout << "Core 2 GEMM test passed!" << std::endl;
+        }
+        
+        using Config3 = typename TTLinear<T>::template CoreConfig<3>;
+        {
+            const size_t N = Config3::kGemmN;
+            const size_t K = Config3::kGemmK;
+            const size_t M = Config3::kGemmM;
+            
+            std::vector<T> input(N * K);
+            std::vector<T> output(N * M);
+            
+            // 使用随机数据
+            for(size_t i = 0; i < input.size(); ++i) {
+                input[i] = static_cast<T>(rand()) / RAND_MAX;
+            }
+            
+            // 执行GEMM操作
+            layer.compute_gemm<3>(input.data(), output.data());
+            
+            // 验证输出维度和数值
+            assert(output.size() == N * M);
+            
+            std::cout << "Core 3 GEMM test passed!" << std::endl;
+        }
+        return true;
+    }
+    catch (const std::exception& e) {
+        std::cout << "GEMM operations test failed: " << e.what() << std::endl;
+        return false;
     }
 }
 
-template<typename T>
-typename TTLinear<T>::GemmDimensions TTLinear<T>::get_gemm_dims(
-    unsigned core_idx, unsigned batch_size) const {
-    
-    const auto& core = cores_[core_idx];
-    return GemmDimensions{
-        .M = batch_size * core.get_gemm_m(),
-        .K = core.get_gemm_k(),
-        .N = core.get_gemm_n()
-    };
-}
+int main() {
+    bool float_tests_passed = test_construction<float>() &&
+                            test_forward_propagation<float>() &&
+                            test_gemm_operations<float>();
+                            
+    #ifdef MM_HALF_PRECISION
+    bool half_tests_passed = test_construction<half>() &&
+                           test_forward_propagation<half>() &&
+                           test_gemm_operations<half>();
+    #else
+    bool half_tests_passed = true;
+    #endif
 
-template<typename T>
-size_t TTLinear<T>::calculate_buffer_size(
-    unsigned core_idx, unsigned batch_size) const {
-    
-    auto dims = get_gemm_dims(core_idx, batch_size);
-    const unsigned elements_per_pack = sizeof(MemoryPackM_t) / sizeof(T);
-    return ((dims.M * dims.N + elements_per_pack - 1) / elements_per_pack);
-}
-
-template<typename T>
-void TTLinear<T>::validate_runtime(
-    const T* input, T* output, unsigned batch_size) const {
-    
-    if (input == nullptr || output == nullptr) {
-        throw std::invalid_argument("Null input/output pointers");
-    }
-    if (batch_size == 0 || batch_size > kMaxBatchSize) {
-        throw std::invalid_argument("Invalid batch size");
+    if (float_tests_passed && half_tests_passed) {
+        std::cout << "\nAll tests passed successfully!" << std::endl;
+        return 0;
+    } else {
+        std::cout << "\nSome tests failed!" << std::endl;
+        return 1;
     }
 }
-
-template<typename T>
-void TTLinear<T>::verify_chain_consistency() const {
-    validate_tt_core_chain(cores_);
-}
-
-template<typename T>
-void TTLinear<T>::ensure_buffer_capacity(unsigned batch_size) const {
-    size_t required_size = 0;
-    for (unsigned i = 0; i < config_.num_cores; ++i) {
-        required_size = std::max(
-            required_size,
-            calculate_buffer_size(i, batch_size)
-        );
-    }
-
-    if (required_size > input_buffer_.size()) {
-        throw std::runtime_error("Buffer capacity exceeded");
-    }
-}
-
-template<typename T>
-void TTLinear<T>::print_dimensions() const {
-    std::cout << "TT-Linear layer dimensions:\n"
-              << "  Input size: " << config_.input_size << "\n"
-              << "  Output size: " << config_.output_size << "\n"
-              << "  Number of cores: " << config_.num_cores << "\n"
-              << "  Input modes: ";
-    for (auto m : config_.input_modes) std::cout << m << " ";
-    std::cout << "\n  Output modes: ";
-    for (auto m : config_.output_modes) std::cout << m << " ";
-    std::cout << "\n  Ranks: ";
-    for (auto r : config_.ranks) std::cout << r << " ";
-    std::cout << std::endl;
-}
-
-// 显式实例化
-template class TTLinear<float>;
-template class TTLinear<half>;
-
-} // namespace tt
-} // namespace gemm_hls

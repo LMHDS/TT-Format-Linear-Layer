@@ -1,5 +1,4 @@
 #pragma once
-
 #include <cstddef>
 #include <cstdint>
 #ifdef MM_HALF_PRECISION
@@ -7,80 +6,150 @@
 #endif
 #include "hlslib/xilinx/Operators.h"
 
+// 基础类型定义
 using uint8_t = unsigned char;
-using Data_t = ${MM_DATA_TYPE}; 
 
-constexpr int kMemoryWidthBytesN = ${MM_MEMORY_BUS_WIDTH_N};
-constexpr int kMemoryWidthBytesK = ${MM_MEMORY_BUS_WIDTH_K};
-constexpr int kMemoryWidthBytesM = ${MM_MEMORY_BUS_WIDTH_M};
-
-#ifndef MM_DYNAMIC_SIZES
-constexpr unsigned long kSizeN = ${MM_SIZE_N};
-constexpr unsigned long kSizeK = ${MM_SIZE_K};
-constexpr unsigned long kSizeM = ${MM_SIZE_M};
+// 数据类型定义
+#ifdef MM_HALF_PRECISION
+using Data_t = half;
+using TTDataType = half;
+#else
+using Data_t = float;
+using TTDataType = float;
 #endif
 
-constexpr unsigned long kOuterTileSizeN = ${MM_MEMORY_TILE_SIZE_N};
-constexpr unsigned long kOuterTileSizeM = ${MM_MEMORY_TILE_SIZE_M};
-constexpr unsigned long kInnerTileSizeN = ${MM_PARALLELISM_N};
-constexpr int kComputeTileSizeM = ${MM_PARALLELISM_M};
-// constexpr int kComputeTileSizeN = ${MM_GRANULARITY_N}; // NYI
-constexpr int kComputeTileSizeN = 1;
+// GEMM配置命名空间生成宏
+#define GEMM_CONFIGS_START(index) namespace tt_core##index {
+#define GEMM_CONFIGS_END }
 
-constexpr int kTransposeWidthBytes = ${MM_TRANSPOSE_WIDTH};
-constexpr float kFrequency = ${MM_CLOCK_INTERNAL};
-constexpr auto kGoldenDir = "${MM_GOLDEN_DIR}"; 
+// 为每个核心定义独立配置
+GEMM_CONFIGS_START(0)
+    // GEMM dimensions
+    constexpr unsigned long kGemmN = ${TT_GEMM_N0};
+    constexpr unsigned long kGemmK = ${TT_GEMM_K0};
+    constexpr unsigned long kGemmM = ${TT_GEMM_M0};
 
+    // Memory configurations - 每个核心独立配置
+    constexpr int kMemoryWidthBytesN = ${TT_CORE0_MEMORY_WIDTH_N};
+    constexpr int kMemoryWidthBytesK = ${TT_CORE0_MEMORY_WIDTH_K};
+    constexpr int kMemoryWidthBytesM = ${TT_CORE0_MEMORY_WIDTH_M};
+
+    constexpr int kMemoryWidthN = kMemoryWidthBytesN / sizeof(Data_t);
+    constexpr int kMemoryWidthK = kMemoryWidthBytesK / sizeof(Data_t);
+    constexpr int kMemoryWidthM = kMemoryWidthBytesM / sizeof(Data_t);
+
+    // Compute configurations
+    constexpr int kComputeTileSizeN = ${TT_CORE0_COMPUTE_TILE_N};
+    constexpr int kComputeTileSizeM = ${TT_CORE0_COMPUTE_TILE_M};
+    
+    // Memory alignment
+    constexpr int kMemoryAlignment = ${TT_CORE0_MEMORY_ALIGNMENT};
+    
+    // Width conversion checks
+    #if kMemoryWidthM != kComputeTileSizeM
+    #define TT_CORE0_CONVERT_WIDTH_M
+    #endif
+
+    #if kMemoryWidthN != kComputeTileSizeN
+    #define TT_CORE0_CONVERT_WIDTH_N
+    #endif
+GEMM_CONFIGS_END
+
+GEMM_CONFIGS_START(1)
+    // Similar config for core 1
+    constexpr unsigned long kGemmN = ${TT_GEMM_N1};
+    constexpr unsigned long kGemmK = ${TT_GEMM_K1};
+    constexpr unsigned long kGemmM = ${TT_GEMM_M1};
+
+    constexpr int kMemoryWidthBytesN = ${TT_CORE1_MEMORY_WIDTH_N};
+    constexpr int kMemoryWidthBytesK = ${TT_CORE1_MEMORY_WIDTH_K};
+    constexpr int kMemoryWidthBytesM = ${TT_CORE1_MEMORY_WIDTH_M};
+
+    constexpr int kMemoryWidthN = kMemoryWidthBytesN / sizeof(Data_t);
+    constexpr int kMemoryWidthK = kMemoryWidthBytesK / sizeof(Data_t);
+    constexpr int kMemoryWidthM = kMemoryWidthBytesM / sizeof(Data_t);
+
+    constexpr int kComputeTileSizeN = ${TT_CORE1_COMPUTE_TILE_N};
+    constexpr int kComputeTileSizeM = ${TT_CORE1_COMPUTE_TILE_M};
+    
+    constexpr int kMemoryAlignment = ${TT_CORE1_MEMORY_ALIGNMENT};
+    
+    #if kMemoryWidthM != kComputeTileSizeM
+    #define TT_CORE1_CONVERT_WIDTH_M
+    #endif
+
+    #if kMemoryWidthN != kComputeTileSizeN
+    #define TT_CORE1_CONVERT_WIDTH_N
+    #endif
+GEMM_CONFIGS_END
+
+// Similar configs for cores 2 and 3...
+GEMM_CONFIGS_START(2)
+    constexpr unsigned long kGemmN = ${TT_GEMM_N2};
+    constexpr unsigned long kGemmK = ${TT_GEMM_K2};
+    constexpr unsigned long kGemmM = ${TT_GEMM_M2};
+
+    constexpr int kMemoryWidthBytesN = ${TT_CORE2_MEMORY_WIDTH_N};
+    constexpr int kMemoryWidthBytesK = ${TT_CORE2_MEMORY_WIDTH_K};
+    constexpr int kMemoryWidthBytesM = ${TT_CORE2_MEMORY_WIDTH_M};
+
+    constexpr int kMemoryWidthN = kMemoryWidthBytesN / sizeof(Data_t);
+    constexpr int kMemoryWidthK = kMemoryWidthBytesK / sizeof(Data_t);
+    constexpr int kMemoryWidthM = kMemoryWidthBytesM / sizeof(Data_t);
+
+    constexpr int kComputeTileSizeN = ${TT_CORE2_COMPUTE_TILE_N};
+    constexpr int kComputeTileSizeM = ${TT_CORE2_COMPUTE_TILE_M};
+    
+    constexpr int kMemoryAlignment = ${TT_CORE2_MEMORY_ALIGNMENT};
+    
+    #if kMemoryWidthM != kComputeTileSizeM
+    #define TT_CORE2_CONVERT_WIDTH_M
+    #endif
+
+    #if kMemoryWidthN != kComputeTileSizeN
+    #define TT_CORE2_CONVERT_WIDTH_N
+    #endif
+GEMM_CONFIGS_END
+
+GEMM_CONFIGS_START(3)
+    constexpr unsigned long kGemmN = ${TT_GEMM_N3};
+    constexpr unsigned long kGemmK = ${TT_GEMM_K3};
+    constexpr unsigned long kGemmM = ${TT_GEMM_M3};
+
+    constexpr int kMemoryWidthBytesN = ${TT_CORE3_MEMORY_WIDTH_N};
+    constexpr int kMemoryWidthBytesK = ${TT_CORE3_MEMORY_WIDTH_K};
+    constexpr int kMemoryWidthBytesM = ${TT_CORE3_MEMORY_WIDTH_M};
+
+    constexpr int kMemoryWidthN = kMemoryWidthBytesN / sizeof(Data_t);
+    constexpr int kMemoryWidthK = kMemoryWidthBytesK / sizeof(Data_t);
+    constexpr int kMemoryWidthM = kMemoryWidthBytesM / sizeof(Data_t);
+
+    constexpr int kComputeTileSizeN = ${TT_CORE3_COMPUTE_TILE_N};
+    constexpr int kComputeTileSizeM = ${TT_CORE3_COMPUTE_TILE_M};
+    
+    constexpr int kMemoryAlignment = ${TT_CORE3_MEMORY_ALIGNMENT};
+    
+    #if kMemoryWidthM != kComputeTileSizeM
+    #define TT_CORE3_CONVERT_WIDTH_M
+    #endif
+
+    #if kMemoryWidthN != kComputeTileSizeN
+    #define TT_CORE3_CONVERT_WIDTH_N
+    #endif
+GEMM_CONFIGS_END
+
+// 全局TT配置
+constexpr int kTTNumCores = ${TT_NUM_CORES};
+constexpr int kTTInputSize = ${TT_INPUT_SIZE};
+constexpr int kTTOutputSize = ${TT_OUTPUT_SIZE};
+constexpr int kTTMaxRank = ${TT_MAX_RANK};
+
+#ifdef TT_USE_CUSTOM_MODES
+constexpr std::array<int, kTTNumCores> kTTInputModes = {${TT_INPUT_MODES}};
+constexpr std::array<int, kTTNumCores> kTTOutputModes = {${TT_OUTPUT_MODES}};
+constexpr std::array<int, kTTNumCores + 1> kTTRanks = {${TT_RANKS}};
+#endif
+
+// Operators 
 using OperatorMap = hlslib::op::${MM_MAP_OP}<Data_t>;
 using OperatorReduce = hlslib::op::${MM_REDUCE_OP}<Data_t>;
-
-// TT扩展配置
-#ifdef BUILD_TT_LINEAR
-namespace tt {
-
-// TT基本维度配置
-constexpr unsigned kInputSize = ${TT_INPUT_SIZE};
-constexpr unsigned kOutputSize = ${TT_OUTPUT_SIZE};
-constexpr unsigned kNumCores = ${TT_NUM_CORES};
-constexpr unsigned kMaxRank = ${TT_MAX_RANK};
-
-// 使用与GEMM相同的数据类型和内存配置
-using TTDataType = Data_t;
-constexpr unsigned kMemoryAlignment = kMemoryWidthBytesM;
-constexpr unsigned kStreamDepth = 4;
-constexpr unsigned kMaxBatchSize = 32;
-
-// 自定义维度分解配置
-#ifdef TT_USE_CUSTOM_MODES
-constexpr unsigned kInputModes[] = { ${TT_INPUT_MODES} };
-constexpr unsigned kOutputModes[] = { ${TT_OUTPUT_MODES} };
-constexpr unsigned kRanks[] = { ${TT_RANKS} };
-#else
-// 默认分解（通过计算得到）
-constexpr unsigned kInputPerCore = ${TT_INPUT_SIZE} / ${TT_NUM_CORES};
-constexpr unsigned kOutputPerCore = ${TT_OUTPUT_SIZE} / ${TT_NUM_CORES};
-#endif
-
-// GEMM重用的数据包类型定义
-using ComputePackN_t = hlslib::DataPack<TTDataType, kComputeTileSizeN>;
-using ComputePackM_t = hlslib::DataPack<TTDataType, kComputeTileSizeM>;
-using MemoryPackM_t = hlslib::DataPack<TTDataType, kMemoryWidthBytesM / sizeof(TTDataType)>;
-using Stream = hlslib::Stream<TTDataType, kStreamDepth>;
-
-// 编译期检查
-static_assert(kInputSize > 0 && kOutputSize > 0, "Input/Output size must be positive");
-static_assert(kNumCores > 0, "Number of cores must be positive");
-static_assert(kMaxRank > 0, "Maximum rank must be positive");
-
-} // namespace tt
-#endif  // BUILD_TT_LINEAR
-
-// GEMM内存转换配置
-#if ${MM_MEMORY_BUS_WIDTH_M} != ${MM_KERNEL_WIDTH_M}
-  #define MM_CONVERT_B
-#endif
-
-#if (defined(MM_TRANSPOSED_A) && \
-     (${MM_DATA_WIDTH_${MM_DATA_TYPE}} != ${MM_MEMORY_BUS_WIDTH_N}))
-  #define MM_CONVERT_A
-#endif
